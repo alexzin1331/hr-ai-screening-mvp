@@ -3,19 +3,34 @@ import json
 import uuid
 import zipfile
 import asyncio
-from dotenv import load_dotenv  # Добавьте этот импорт
+import logging
+import re
+from dotenv import load_dotenv
 
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, UploadFile, HTTPException
 from pdfminer.high_level import extract_text
 from docx import Document
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
 
 from groq import Groq
 from telegram import Bot
 
 # Загружаем переменные из .env файла
 load_dotenv()
+
+# ------------------------
+# LOGGING
+# ------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("hr-ai-screening")
 
 # ------------------------
 # CONFIG
@@ -27,15 +42,34 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Проверяем, что ключи загружены
 if not GROQ_API_KEY:
+    logger.error("GROQ_API_KEY не найден в переменных окружения")
     raise ValueError("GROQ_API_KEY не найден в переменных окружения")
 if not BOT_TOKEN:
+    logger.error("BOT_TOKEN не найден в переменных окружения")
     raise ValueError("BOT_TOKEN не найден в переменных окружения")
+
+logger.info("Environment variables loaded successfully. Initializing Groq and Telegram clients.")
 
 # Инициализируем клиенты
 client = Groq(api_key=GROQ_API_KEY)
 bot = Bot(token=BOT_TOKEN)
 
 app = FastAPI()
+
+# Отдаём статику дашборда по /dashboard/*
+app.mount("/dashboard", StaticFiles(directory="dashboard"), name="dashboard")
+
+
+@app.get("/")
+async def root():
+    # Главная страница дашборда
+    return FileResponse("dashboard/index.html")
+
+
+@app.get("/app.js")
+async def app_js():
+    # Чтобы <script src="app.js"> из index.html работал от корня
+    return FileResponse("dashboard/app.js", media_type="application/javascript")
 
 # ------------------------
 # MEMORY STORAGE
@@ -50,27 +84,75 @@ candidates = {}
 # ------------------------
 
 def parse_pdf(path):
-    return extract_text(path)
+    logger.info("parse_pdf: starting PDF text extraction for file: %s", path)
+    text = extract_text(path)
+    logger.info(
+        "parse_pdf: completed for file: %s | length_chars=%d",
+        path,
+        len(text or ""),
+    )
+    return text
+
 
 def parse_docx(path):
+    logger.info("parse_docx: starting DOCX text extraction for file: %s", path)
     doc = Document(path)
-    return "\n".join([p.text for p in doc.paragraphs])
+    text = "\n".join([p.text for p in doc.paragraphs])
+    logger.info(
+        "parse_docx: completed for file: %s | paragraphs=%d | length_chars=%d",
+        path,
+        len(doc.paragraphs),
+        len(text or ""),
+    )
+    return text
+
 
 def parse_resume(path):
+    logger.info("parse_resume: dispatching parser for file: %s", path)
 
-    if path.endswith(".pdf"):
-        return parse_pdf(path)
+    try:
+        if path.endswith(".pdf"):
+            text = parse_pdf(path)
+        elif path.endswith(".docx"):
+            text = parse_docx(path)
+        else:
+            logger.warning("parse_resume: unsupported resume format: %s", path)
+            return ""
 
-    if path.endswith(".docx"):
-        return parse_docx(path)
+        logger.info(
+            "parse_resume: finished for file: %s | length_chars=%d",
+            path,
+            len(text or ""),
+        )
+        return text
+    except Exception:
+        logger.exception("parse_resume: error while parsing resume file: %s", path)
+        raise HTTPException(status_code=500, detail=f"Failed to parse resume file: {os.path.basename(path)}")
 
-    return ""
+
+# ------------------------
+# TELEGRAM USERNAME EXTRACTION FROM RAW TEXT
+# ------------------------
+
+TG_USERNAME_PATTERN = re.compile(r"(?:https?://t\\.me/|@)([A-Za-z0-9_]{5,})")
+
+
+def extract_telegram_username_from_text(text: str):
+    match = TG_USERNAME_PATTERN.search(text or "")
+    if match:
+        username = match.group(1)
+        logger.info("Extracted Telegram username from raw resume text: @%s", username)
+        return username
+
+    logger.debug("No Telegram username found in raw resume text.")
+    return None
 
 # ------------------------
 # LLM EXTRACTION
 # ------------------------
 
 def extract_candidate(resume_text):
+    logger.info("Starting candidate extraction via LLM based on resume text.")
 
     prompt = f"""
 You are an expert HR resume parser.
@@ -119,21 +201,76 @@ summary
 Return ONLY JSON.
 """
 
-    response = client.chat.completions.create(
-        model="llama-3.1-70b",
-        messages=[{"role":"user","content":prompt}],
-        temperature=0
-    )
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-70b",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+    except Exception:
+        logger.exception("LLM error during candidate extraction.")
+        raise HTTPException(status_code=500, detail="LLM error during candidate extraction.")
 
     text = response.choices[0].message.content
+    logger.debug("Raw LLM candidate JSON response: %s", text)
 
-    return json.loads(text)
+    try:
+        candidate = json.loads(text)
+    except json.JSONDecodeError:
+        logger.exception("Failed to parse LLM JSON for candidate.")
+        raise HTTPException(status_code=500, detail="Failed to parse candidate JSON from LLM.")
+
+    if not candidate.get("telegram_username"):
+        fallback_username = extract_telegram_username_from_text(resume_text)
+        if fallback_username:
+            candidate["telegram_username"] = fallback_username
+
+    logger.info(
+        "Candidate extracted: name=%s, email=%s, seniority=%s, total_years_experience=%s, english_level=%s, salary_expectation=%s, telegram=%s",
+        candidate.get("name"),
+        candidate.get("email"),
+        candidate.get("seniority_level"),
+        candidate.get("total_years_experience"),
+        candidate.get("english_level"),
+        candidate.get("salary_expectation"),
+        candidate.get("telegram_username"),
+    )
+
+    # Краткая сводка по скиллам для логов
+    tech_skills = candidate.get("skills_technical") or []
+    soft_skills = candidate.get("skills_soft") or []
+    if isinstance(tech_skills, str):
+        tech_skills_count = len([s for s in tech_skills.split(",") if s.strip()])
+    else:
+        tech_skills_count = len(tech_skills)
+
+    if isinstance(soft_skills, str):
+        soft_skills_count = len([s for s in soft_skills.split(",") if s.strip()])
+    else:
+        soft_skills_count = len(soft_skills)
+
+    logger.info(
+        "Candidate skills summary: technical_count=%d, soft_count=%d",
+        tech_skills_count,
+        soft_skills_count,
+    )
+
+    return candidate
 
 # ------------------------
 # MATCHING
 # ------------------------
 
 def score_candidate(candidate):
+    if not vacancy:
+        logger.error("Attempt to score candidate before vacancy is created.")
+        raise HTTPException(status_code=400, detail="Vacancy is not set. Create vacancy first.")
+
+    logger.info(
+        "Scoring candidate for vacancy. vacancy_title=%s, candidate_name=%s",
+        vacancy.get("title"),
+        candidate.get("name") if isinstance(candidate, dict) else None,
+    )
 
     prompt = f"""
 You are an HR AI that evaluates candidate fit for a vacancy.
@@ -168,15 +305,42 @@ match_gaps
 reason
 """
 
-    response = client.chat.completions.create(
-        model="llama-3.1-70b",
-        messages=[{"role":"user","content":prompt}],
-        temperature=0
-    )
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-70b",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+    except Exception:
+        logger.exception("LLM error during candidate scoring.")
+        raise HTTPException(status_code=500, detail="LLM error during candidate scoring.")
 
     text = response.choices[0].message.content
+    logger.debug("Raw LLM scoring JSON response: %s", text)
 
-    return json.loads(text)
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        logger.exception("Failed to parse LLM JSON for candidate scoring.")
+        raise HTTPException(status_code=500, detail="Failed to parse scoring JSON from LLM.")
+
+    strengths = result.get("match_strengths")
+    gaps = result.get("match_gaps")
+    reason = result.get("reason")
+
+    strengths_len = len(strengths) if isinstance(strengths, (list, str)) else 0
+    gaps_len = len(gaps) if isinstance(gaps, (list, str)) else 0
+    reason_preview = (reason[:200] + "...") if isinstance(reason, str) and len(reason) > 200 else reason
+
+    logger.info(
+        "Candidate scored: score=%s, strengths_len=%d, gaps_len=%d",
+        result.get("score"),
+        strengths_len,
+        gaps_len,
+    )
+    logger.info("Candidate score reason (preview): %s", reason_preview)
+
+    return result
 
 # ------------------------
 # TELEGRAM
@@ -201,8 +365,10 @@ Please reply to start the interview.
             text=message
         )
 
+        logger.info("Telegram message successfully sent to @%s", username)
+
     except Exception as e:
-        print("telegram error:", e)
+        logger.exception("Telegram error while sending message to @%s", username)
 
 # ------------------------
 # API
@@ -210,30 +376,76 @@ Please reply to start the interview.
 
 @app.post("/create_vacancy")
 async def create_vacancy(data: dict):
+    logger.info("Received create_vacancy request with data: %s", data)
+
+    required_fields = ["title", "skills", "description", "seniority"]
+    missing_fields = [f for f in required_fields if f not in data]
+    if missing_fields:
+        logger.error("Missing fields in create_vacancy request: %s", missing_fields)
+        raise HTTPException(status_code=400, detail=f"Missing fields: {missing_fields}")
 
     vacancy["title"] = data["title"]
     vacancy["skills"] = data["skills"]
     vacancy["description"] = data["description"]
     vacancy["seniority"] = data["seniority"]
 
-    return {"status":"vacancy_created"}
+    logger.info("Vacancy created: title=%s, seniority=%s", vacancy["title"], vacancy["seniority"])
+
+    return {"status": "vacancy_created"}
 
 # ------------------------
 
 @app.post("/upload_resumes")
 async def upload_resumes(file: UploadFile):
+    logger.info("Received upload_resumes request. Filename=%s", file.filename)
 
-    with open("resumes.zip","wb") as f:
-        f.write(await file.read())
+    if not vacancy:
+        logger.error("upload_resumes called before vacancy was created.")
+        raise HTTPException(status_code=400, detail="Vacancy is not set. Create vacancy first.")
 
-    with zipfile.ZipFile("resumes.zip",'r') as zip_ref:
-        zip_ref.extractall("resumes")
+    os.makedirs("resumes", exist_ok=True)
+
+    try:
+        file_bytes = await file.read()
+        with open("resumes.zip", "wb") as f:
+            f.write(file_bytes)
+        logger.info("Saved resumes.zip (%d bytes). Extracting...", len(file_bytes))
+    except Exception:
+        logger.exception("Failed to save uploaded resumes ZIP.")
+        raise HTTPException(status_code=500, detail="Failed to save uploaded resumes ZIP.")
+
+    try:
+        with zipfile.ZipFile("resumes.zip", "r") as zip_ref:
+            zip_ref.extractall("resumes")
+        logger.info("ZIP extracted into 'resumes' directory.")
+    except Exception:
+        logger.exception("Failed to extract resumes ZIP.")
+        raise HTTPException(status_code=500, detail="Failed to extract resumes ZIP.")
+
+    candidates.clear()
+    logger.info("Cleared previous candidates. Starting parsing pipeline.")
+
+    processed_count = 0
+    skipped_unsupported = 0
+    skipped_empty = 0
 
     for filename in os.listdir("resumes"):
 
         path = f"resumes/{filename}"
 
+        if not (path.endswith(".pdf") or path.endswith(".docx")):
+            logger.warning("Skipping non-resume file inside ZIP: %s", filename)
+            skipped_unsupported += 1
+            continue
+
+        logger.info("Processing resume file from ZIP: %s", filename)
+
         text = parse_resume(path)
+
+        if not text:
+            logger.warning("Empty or unsupported resume content: %s", filename)
+            skipped_empty += 1
+            continue
 
         candidate = extract_candidate(text)
 
@@ -243,18 +455,57 @@ async def upload_resumes(file: UploadFile):
 
         candidates[cid] = {
             "data": candidate,
-            "score": match["score"],
+            "score": match.get("score"),
             "analysis": match
         }
 
-    return {"parsed": len(candidates)}
+        processed_count += 1
+
+        logger.info(
+            "Candidate stored. id=%s, name=%s, score=%s, telegram=%s",
+            cid,
+            candidate.get("name"),
+            match.get("score"),
+            candidate.get("telegram_username"),
+        )
+
+    logger.info(
+        "Upload and parsing completed. Total candidates parsed: %d, skipped_unsupported=%d, skipped_empty=%d",
+        len(candidates),
+        skipped_unsupported,
+        skipped_empty,
+    )
+
+    return {
+        "parsed": len(candidates),
+        "processed": processed_count,
+        "skipped_unsupported": skipped_unsupported,
+        "skipped_empty": skipped_empty
+    }
 
 # ------------------------
 
 @app.post("/start_screening")
 async def start_screening(data: dict):
+    logger.info("Received start_screening request with data: %s", data)
 
-    n = data["n"]
+    if not vacancy:
+        logger.error("start_screening called before vacancy was created.")
+        raise HTTPException(status_code=400, detail="Vacancy is not set. Create vacancy first.")
+
+    if not candidates:
+        logger.error("start_screening called but no candidates are loaded.")
+        raise HTTPException(status_code=400, detail="No candidates loaded. Upload resumes first.")
+
+    try:
+        n = int(data["n"])
+    except (KeyError, ValueError, TypeError):
+        logger.error("Invalid or missing 'n' in start_screening request: %s", data)
+        raise HTTPException(status_code=400, detail="'n' must be a positive integer.")
+
+    if n <= 0:
+        logger.error("Non-positive 'n' value in start_screening: %s", n)
+        raise HTTPException(status_code=400, detail="'n' must be a positive integer.")
 
     sorted_candidates = sorted(
         candidates.items(),
@@ -264,26 +515,46 @@ async def start_screening(data: dict):
 
     top_candidates = sorted_candidates[:n]
 
+    logger.info(
+        "Selected top %d candidates for Telegram outreach (from total %d).",
+        len(top_candidates),
+        len(sorted_candidates),
+    )
+
     sent = []
+    skipped_no_telegram = []
 
     for cid, cand in top_candidates:
 
         username = cand["data"].get("telegram_username")
 
-        if username:
+        if not username:
+            logger.warning("Candidate %s has no Telegram username, skipping.", cid)
+            skipped_no_telegram.append(cid)
+            continue
 
-            await send_message(username)
+        await send_message(username)
 
-            sent.append(username)
+        sent.append(username)
+
+    logger.info(
+        "Screening completed. Total contacted candidates: %d, skipped_no_telegram=%d",
+        len(sent),
+        len(skipped_no_telegram),
+    )
 
     return {
-        "contacted_candidates": sent
+        "contacted_candidates": sent,
+        "requested_top_n": n,
+        "total_candidates": len(sorted_candidates),
+        "skipped_no_telegram": skipped_no_telegram,
     }
 
 # ------------------------
 
 @app.get("/candidates")
 def get_candidates():
+    logger.info("Received get_candidates request.")
 
     sorted_candidates = sorted(
         candidates.values(),
@@ -291,4 +562,16 @@ def get_candidates():
         reverse=True
     )
 
+    logger.info("Returning %d candidates.", len(sorted_candidates))
+
     return sorted_candidates
+
+
+@app.get("/health")
+def health():
+    logger.info("Healthcheck requested.")
+    return {
+        "status": "ok",
+        "vacancy_created": bool(vacancy),
+        "candidates_loaded": len(candidates),
+    }
