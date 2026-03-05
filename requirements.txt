@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+python-multipart
+pdfminer.six
+python-docx
+groq
+python-telegram-bot
+python-dotenv
