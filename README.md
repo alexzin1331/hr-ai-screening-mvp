@@ -5,7 +5,9 @@ pip install -r requirements.txt
 В корне проекта создать файл .env:
 
 TELEGRAM_BOT_TOKEN=your_bot_token
+
 OPENAI_API_KEY=your_api_key
+
 3. Создать Telegram бота
 
 Открыть бота @BotFather в Telegram
