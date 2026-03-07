@@ -5,3 +5,5 @@
 .env.gpg
 *.pyc
 __pycache__/
+venv/
+get-pip.py
