@@ -12,6 +12,7 @@
         .glass { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
         .loader { border-top-color: #6366f1; animation: spinner 1.5s linear infinite; }
         @keyframes spinner { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .drag-over { border-color: #6366f1 !important; background-color: #eef2ff !important; }
     </style>
 </head>
 <body class="text-slate-800">
@@ -26,14 +27,13 @@
                 </div>
                 <h1 class="text-xl font-bold tracking-tight text-slate-900">HR AI Screening <span class="text-indigo-600 text-sm font-medium">MVP</span></h1>
             </div>
-            <div id="status-badge" class="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700 flex items-center gap-2">
+            <div class="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700 flex items-center gap-2">
                 <span class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span> Системы активны
             </div>
         </div>
     </nav>
 
     <main class="max-w-7xl mx-auto p-6 space-y-8">
-        
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             
             <div class="lg:col-span-1 space-y-6">
@@ -48,14 +48,14 @@
                     </h2>
                     <div class="space-y-4">
                         <input id="title" type="text" placeholder="Название (напр. Python Dev)" class="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all">
-                        <input id="skills" type="text" placeholder="Навыки (React, Python, SQL)" class="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all">
+                        <input id="skills" type="text" placeholder="Навыки (React, Python)" class="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all">
                         <select id="seniority" class="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all bg-white">
                             <option value="Junior">Junior</option>
                             <option value="Middle">Middle</option>
                             <option value="Senior">Senior</option>
                         </select>
-                        <textarea id="description" rows="4" placeholder="Полное описание требований..." class="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"></textarea>
-                        <button onclick="createVacancy()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition-all shadow-lg shadow-indigo-100 active:transform active:scale-95">
+                        <textarea id="description" rows="3" placeholder="Описание требований..." class="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"></textarea>
+                        <button onclick="createVacancy()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition-all active:transform active:scale-95 shadow-lg shadow-indigo-100">
                             Сохранить вакансию
                         </button>
                     </div>
@@ -68,31 +68,39 @@
                         </svg>
                         2. Загрузить резюме
                     </h2>
-                    <div class="border-2 border-dashed border-slate-200 rounded-2xl p-6 text-center hover:border-indigo-400 transition-colors group">
-                        <input type="file" id="file" class="hidden" accept=".zip">
-                        <label for="file" class="cursor-pointer">
-                            <div class="text-slate-400 group-hover:text-indigo-500 transition-colors font-medium">Выберите ZIP-архив</div>
-                            <div class="text-xs text-slate-300 mt-1">Внутри должны быть PDF или DOCX</div>
-                        </label>
+                    
+                    <div id="drop-zone" class="relative border-2 border-dashed border-slate-200 rounded-2xl p-8 text-center transition-all bg-slate-50/50 group">
+                        <input type="file" id="file" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept=".zip">
+                        
+                        <div id="zone-idle" class="space-y-2">
+                            <div class="text-slate-500 group-hover:text-indigo-500 transition-colors font-medium">Перетащите ZIP сюда</div>
+                            <div class="text-xs text-slate-300">или нажмите для выбора</div>
+                        </div>
+
+                        <div id="zone-active" class="hidden flex flex-col items-center animate__animated animate__bounceIn">
+                            <div class="bg-indigo-100 text-indigo-600 p-2 rounded-full mb-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            </div>
+                            <div id="file-name" class="text-sm font-bold text-slate-700 truncate max-w-[180px]">file.zip</div>
+                            <button onclick="clearFile(event)" class="mt-2 text-xs text-rose-500 hover:text-rose-700 font-semibold underline z-20 relative">Удалить</button>
+                        </div>
                     </div>
-                    <button onclick="uploadResumes()" id="btn-upload" class="w-full mt-4 bg-slate-800 hover:bg-slate-900 text-white font-semibold py-2.5 rounded-xl transition-all flex justify-center items-center gap-2 active:transform active:scale-95">
+
+                    <button onclick="uploadResumes()" id="btn-upload" class="w-full mt-4 bg-slate-800 hover:bg-slate-900 text-white font-semibold py-2.5 rounded-xl transition-all flex justify-center items-center gap-2">
                         <span>Начать AI-анализ</span>
                         <div id="loader-upload" class="hidden loader w-4 h-4 border-2 border-white rounded-full border-t-transparent"></div>
                     </button>
                 </section>
             </div>
 
+            <!-- Правая колонка -->
             <div class="lg:col-span-2 space-y-6">
                 <section class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 animate__animated animate__fadeInRight">
                     <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
                         <h2 class="text-xl font-bold text-slate-900">Результаты скрининга</h2>
                         <div class="flex items-center gap-2">
-                            <label for="n" class="text-xs text-slate-400 font-medium">TOP:</label>
                             <input id="n" type="number" value="3" class="w-16 px-3 py-1.5 rounded-lg border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500">
-                            <button onclick="startScreening()" class="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-1.5 rounded-lg font-medium transition-all flex items-center gap-2 shadow-lg shadow-emerald-50 active:transform active:scale-95">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
-                                </svg>
+                            <button onclick="startScreening()" class="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-1.5 rounded-lg font-medium transition-all shadow-lg shadow-emerald-50 active:transform active:scale-95">
                                 Связаться в Telegram
                             </button>
                         </div>
@@ -104,31 +112,20 @@
                                 <tr class="text-slate-400 text-xs uppercase tracking-wider border-b border-slate-100">
                                     <th class="pb-4 font-semibold">Кандидат</th>
                                     <th class="pb-4 font-semibold">Опыт</th>
-                                    <th class="pb-4 font-semibold text-center">AI Score</th>
+                                    <th class="pb-4 font-semibold text-center">Score</th>
                                     <th class="pb-4 font-semibold">Telegram</th>
                                 </tr>
                             </thead>
-                            <tbody id="candidate-list" class="divide-y divide-slate-50">
-                                
-                            </tbody>
+                            <tbody id="candidate-list" class="divide-y divide-slate-50"></tbody>
                         </table>
-                        
                         <div id="empty-state" class="py-20 text-center">
-                            <div class="text-slate-300 mb-2">
-                                <svg class="w-12 h-12 mx-auto mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
-                                </svg>
-                            </div>
-                            <p class="text-slate-400">Нет данных. Создайте вакансию и загрузите резюме.</p>
+                            <p class="text-slate-400">Нет данных. Загрузите резюме для начала анализа.</p>
                         </div>
                     </div>
                 </section>
             </div>
-
         </div>
     </main>
-
-    <!-- Подключаем логику -->
     <script src="app.js"></script>
 </body>
 </html>

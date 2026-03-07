@@ -80,6 +80,16 @@ vacancy = {}
 candidates = {}
 
 # ------------------------
+# HELPERS (Добавлено только это для фикса JSON)
+# ------------------------
+
+def clean_json_response(text: str) -> str:
+    """Удаляет markdown кавычки и лишний текст вокруг JSON"""
+    text = re.sub(r'```json\s*', '', text)
+    text = re.sub(r'```\s*', '', text)
+    return text.strip()
+
+# ------------------------
 # PARSERS
 # ------------------------
 
@@ -203,7 +213,7 @@ Return ONLY JSON.
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.1-70b",
+            model="llama-3.3-70b-versatile", # ИСПРАВЛЕНО: актуальное название модели
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
         )
@@ -215,7 +225,9 @@ Return ONLY JSON.
     logger.debug("Raw LLM candidate JSON response: %s", text)
 
     try:
-        candidate = json.loads(text)
+        # ИСПРАВЛЕНО: добавлена очистка текста перед парсингом JSON
+        clean_text = clean_json_response(text)
+        candidate = json.loads(clean_text)
     except json.JSONDecodeError:
         logger.exception("Failed to parse LLM JSON for candidate.")
         raise HTTPException(status_code=500, detail="Failed to parse candidate JSON from LLM.")
@@ -307,7 +319,7 @@ reason
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.1-70b",
+            model="llama-3.3-70b-versatile", # ИСПРАВЛЕНО: актуальное название модели
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
         )
@@ -319,7 +331,9 @@ reason
     logger.debug("Raw LLM scoring JSON response: %s", text)
 
     try:
-        result = json.loads(text)
+        # ИСПРАВЛЕНО: добавлена очистка текста перед парсингом JSON
+        clean_text = clean_json_response(text)
+        result = json.loads(clean_text)
     except json.JSONDecodeError:
         logger.exception("Failed to parse LLM JSON for candidate scoring.")
         raise HTTPException(status_code=500, detail="Failed to parse scoring JSON from LLM.")
