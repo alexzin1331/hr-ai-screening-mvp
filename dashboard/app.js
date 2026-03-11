@@ -1,172 +1,309 @@
-async function createVacancy() {
-    const title = document.getElementById("title").value.trim();
-    const skills = document.getElementById("skills").value.trim();
-    const seniority = document.getElementById("seniority").value.trim();
-    const description = document.getElementById("description").value.trim();
+const apiPrefix = "/api";
 
-    if (!title || !skills || !description) {
-        alert("⚠️ Пожалуйста, заполните название, навыки и описание вакансии.");
+const state = {
+    vacancies: [],
+    selectedVacancyId: null,
+};
+
+let elements = null;
+
+function getElements() {
+    if (elements) {
+        return elements;
+    }
+    elements = {
+        requestIdLabel: document.getElementById("request-id-label"),
+        healthBadge: document.getElementById("health-badge"),
+        vacancyStatus: document.getElementById("vacancy-status"),
+        title: document.getElementById("title"),
+        description: document.getElementById("description"),
+        hardSkills: document.getElementById("hard-skills"),
+        softSkills: document.getElementById("soft-skills"),
+        seniority: document.getElementById("seniority"),
+        createVacancyBtn: document.getElementById("create-vacancy-btn"),
+        vacancySelect: document.getElementById("vacancy-select"),
+        resumeFile: document.getElementById("resume-file"),
+        consent: document.getElementById("consent"),
+        uploadBtn: document.getElementById("upload-btn"),
+        uploadSummary: document.getElementById("upload-summary"),
+        candidateTable: document.getElementById("candidate-table"),
+        topN: document.getElementById("top-n"),
+        refreshBtn: document.getElementById("refresh-btn"),
+        outreachBtn: document.getElementById("outreach-btn"),
+        exportJsonBtn: document.getElementById("export-json-btn"),
+        exportCsvBtn: document.getElementById("export-csv-btn"),
+        uiStatus: document.getElementById("ui-status"),
+    };
+    return elements;
+}
+
+function setUiStatus(message, type = "info") {
+    const el = getElements().uiStatus;
+    if (!el) {
         return;
     }
+    el.textContent = message;
+    el.dataset.type = type;
+}
 
-    const payload = { title, skills, seniority, description };
+function setRequestId(response) {
+    const requestId = response.headers.get("X-Request-ID") || "-";
+    getElements().requestIdLabel.textContent = `request_id: ${requestId}`;
+}
 
+function splitCsv(value) {
+    return value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+}
+
+async function fetchJson(url, options = {}) {
+    const response = await fetch(url, options);
+    setRequestId(response);
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+    if (!response.ok) {
+        const message = payload?.error?.message || payload?.detail || "Запрос завершился ошибкой";
+        throw new Error(message);
+    }
+    return payload;
+}
+
+async function loadHealth() {
     try {
-        const res = await fetch("/create_vacancy", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-        });
-
-        if (res.ok) {
-            alert("✅ Вакансия успешно создана и сохранена в системе!");
-        } else {
-            const errorData = await res.json();
-            alert("❌ Ошибка при создании: " + (errorData.detail || "Неизвестная ошибка"));
-        }
-    } catch (e) {
-        console.error("CreateVacancy error:", e);
-        alert("❌ Ошибка сети. Проверьте, запущен ли бэкенд.");
+        await fetchJson("/health/ready");
+        getElements().healthBadge.textContent = "Система готова";
+    } catch (error) {
+        getElements().healthBadge.textContent = `Health error: ${error.message}`;
     }
 }
 
-async function uploadResumes() {
-    const fileInput = document.getElementById("file");
-    const btn = document.getElementById("btn-upload");
-    const loader = document.getElementById("loader-upload");
-    const btnText = btn.querySelector("span");
+async function loadVacancies() {
+    const vacancies = await fetchJson(`${apiPrefix}/vacancies`);
+    state.vacancies = vacancies;
+    const select = getElements().vacancySelect;
+    select.innerHTML = "";
+    if (!vacancies.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "Вакансий пока нет";
+        select.appendChild(option);
+        state.selectedVacancyId = null;
+        return;
+    }
 
-    if (!fileInput.files[0]) {
-        alert("⚠️ Выберите ZIP-файл с резюме для загрузки.");
+    vacancies.forEach((vacancy) => {
+        const option = document.createElement("option");
+        option.value = vacancy.id;
+        option.textContent = `${vacancy.id}: ${vacancy.title}`;
+        select.appendChild(option);
+    });
+
+    if (!state.selectedVacancyId) {
+        state.selectedVacancyId = vacancies[0].id;
+    }
+    select.value = String(state.selectedVacancyId);
+    updateVacancyStatus();
+}
+
+function updateVacancyStatus() {
+    const vacancy = state.vacancies.find((item) => item.id === Number(state.selectedVacancyId));
+    const label = getElements().vacancyStatus;
+    label.textContent = vacancy ? `vacancy_id=${vacancy.id} | ${vacancy.title}` : "Не выбрана";
+}
+
+async function createVacancy() {
+    const el = getElements();
+    const payload = {
+        title: el.title.value.trim(),
+        description: el.description.value.trim(),
+        hard_skills: splitCsv(el.hardSkills.value),
+        soft_skills: splitCsv(el.softSkills.value),
+        seniority: el.seniority.value,
+        status: "active",
+    };
+
+    if (!payload.title || !payload.description) {
+        alert("Заполните title и description.");
+        return;
+    }
+
+    const vacancy = await fetchJson(`${apiPrefix}/vacancies`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+    state.selectedVacancyId = vacancy.id;
+    setUiStatus(`Вакансия ${vacancy.id} создана.`, "success");
+    await loadVacancies();
+    await loadCandidates();
+}
+
+async function uploadResumes() {
+    if (!state.selectedVacancyId) {
+        alert("Сначала создайте или выберите вакансию.");
+        return;
+    }
+    const el = getElements();
+    const fileInput = el.resumeFile;
+    const file = fileInput.files[0];
+    if (!file) {
+        alert("Выберите файл.");
         return;
     }
 
     const formData = new FormData();
-    formData.append("file", fileInput.files[0]);
+    formData.append("file", file);
+    formData.append("consent_to_personal_data_processing", el.consent.checked ? "true" : "false");
 
-    btn.disabled = true;
-    loader.classList.remove("hidden");
-    btnText.textContent = "AI анализирует файлы...";
-
-    try {
-        const res = await fetch("/upload_resumes", {
-            method: "POST",
-            body: formData,
-        });
-
-        if (!res.ok) {
-            const errorData = await res.json();
-            throw new Error(errorData.detail || "Ошибка сервера");
-        }
-
-        const data = await res.json();
-        alert(`🎉 Анализ завершен!\nОбработано: ${data.processed}\nПропущено: ${data.skipped_unsupported + data.skipped_empty}`);
-        
-        await loadCandidates();
-
-    } catch (e) {
-        console.error("Upload error:", e);
-        alert("❌ Ошибка при обработке: " + e.message);
-    } finally {
-        btn.disabled = false;
-        loader.classList.add("hidden");
-        btnText.textContent = "Начать AI-анализ";
-        fileInput.value = "";
-    }
+    const result = await fetchJson(`${apiPrefix}/vacancies/${state.selectedVacancyId}/resumes`, {
+        method: "POST",
+        body: formData,
+    });
+    el.uploadSummary.textContent = JSON.stringify(result, null, 2);
+    setUiStatus(`Файлы обработаны. Успешно: ${result.processed}.`, "success");
+    await loadCandidates();
 }
 
-async function loadCandidates() {
-    const list = document.getElementById("candidate-list");
-    const emptyState = document.getElementById("empty-state");
-
-    try {
-        const res = await fetch("/candidates");
-        const data = await res.json();
-
-        list.innerHTML = "";
-
-        if (!data || data.length === 0) {
-            emptyState.classList.remove("hidden");
-            return;
-        }
-
-        emptyState.classList.add("hidden");
-
-        data.forEach((item, index) => {
-            const c = item.data || {};
-            const score = item.score || 0;
-            
-            let scoreClasses = "text-slate-500 bg-slate-100"; 
-            if (score >= 80) scoreClasses = "text-emerald-700 bg-emerald-100 border border-emerald-200";
-            else if (score >= 50) scoreClasses = "text-amber-700 bg-amber-100 border border-amber-200";
-            else if (score > 0) scoreClasses = "text-rose-700 bg-rose-100 border border-rose-200";
-
-            const row = document.createElement("tr");
-            row.className = "hover:bg-indigo-50/30 transition-colors animate__animated animate__fadeInUp";
-            row.style.animationDelay = `${index * 0.1}s`; 
-
-            row.innerHTML = `
-                <td class="py-4 pr-4">
-                    <div class="font-bold text-slate-900">${c.name || "Не указано"}</div>
-                    <div class="text-xs text-slate-400 truncate max-w-[200px]" title="${c.current_position || ''}">
-                        ${c.current_position || "Должность не определена"}
-                    </div>
-                </td>
-                <td class="py-4">
-                    <div class="text-sm font-semibold text-slate-700">${c.total_years_experience || 0}г. опыта</div>
-                    <div class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">${c.seniority_level || "-"}</div>
-                </td>
-                <td class="py-4 text-center">
-                    <span class="inline-block px-3 py-1 rounded-full text-sm font-bold shadow-sm ${scoreClasses}">
-                        ${score}%
-                    </span>
-                </td>
-                <td class="py-4">
-                    ${c.telegram_username 
-                        ? `<a href="https://t.me/${c.telegram_username.replace('@', '')}" target="_blank" class="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-800 font-medium transition-colors">
-                             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
-                             @${c.telegram_username.replace('@', '')}
-                           </a>` 
-                        : `<span class="text-slate-300 text-xs italic italic">не найден</span>`
-                    }
-                </td>
-            `;
-            list.appendChild(row);
-        });
-    } catch (e) {
-        console.error("LoadCandidates error:", e);
-    }
-}
-
-async function startScreening() {
-    const nInput = document.getElementById("n");
-    const n = parseInt(nInput.value);
-
-    if (!n || n <= 0) {
-        alert("⚠️ Введите корректное число кандидатов (TOP N).");
+function renderCandidates(candidates) {
+    const tbody = getElements().candidateTable;
+    tbody.innerHTML = "";
+    if (!candidates.length) {
+        const row = document.createElement("tr");
+        row.innerHTML = `<td colspan="8" class="empty-cell">Кандидаты ещё не обработаны.</td>`;
+        tbody.appendChild(row);
         return;
     }
 
-    try {
-        const res = await fetch("/start_screening", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ n }),
-        });
+    candidates.forEach((candidate) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+            <td>
+                <strong>${candidate.full_name || "Не определён"}</strong>
+                <div class="subtle">${candidate.email || "-"}</div>
+            </td>
+            <td>${candidate.current_position || "-"}</td>
+            <td>${candidate.total_years_experience ?? "-"} / ${candidate.seniority_level || "-"}</td>
+            <td>${candidate.email || "-"}<div class="subtle">${candidate.email_invite_status || "-"}</div></td>
+            <td>${candidate.telegram_username ? `@${candidate.telegram_username}` : "не найден"}</td>
+            <td><span class="score">${candidate.total_score ?? "-"}</span></td>
+            <td>
+                <div>candidate: ${candidate.candidate_status}</div>
+                <div>contact: ${candidate.contact_status}</div>
+                <div>resume: ${candidate.parse_status}</div>
+                <div>scoring: ${candidate.scoring_status}</div>
+            </td>
+            <td>${candidate.summary || candidate.reason || "-"}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
 
-        if (res.ok) {
-            const data = await res.json();
-            alert(`🚀 Успех!\nБот попытался связаться с ${data.contacted_candidates.length} кадидатами.\nПропущено (без TG): ${data.skipped_no_telegram.length}`);
-        } else {
-            const errorData = await res.json();
-            alert("❌ Ошибка рассылки: " + (errorData.detail || "Не удалось отправить сообщения."));
+async function loadCandidates() {
+    if (!state.selectedVacancyId) {
+        renderCandidates([]);
+        return;
+    }
+    const candidates = await fetchJson(`${apiPrefix}/vacancies/${state.selectedVacancyId}/candidates`);
+    renderCandidates(candidates);
+}
+
+async function startOutreach() {
+    if (!state.selectedVacancyId) {
+        alert("Выберите вакансию.");
+        return;
+    }
+    const topN = Number(getElements().topN.value);
+    const result = await fetchJson(`${apiPrefix}/vacancies/${state.selectedVacancyId}/send-invites`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ top_n: topN, refresh_invite_token: false }),
+    });
+    setUiStatus(`Email outreach завершён. sent=${result.sent}, email_missing=${result.email_missing}, invalid=${result.invalid_email}, errors=${result.errors}`, "success");
+    alert(`Email invite отправлено: ${result.sent}, без email: ${result.email_missing}, invalid: ${result.invalid_email}, ошибок: ${result.errors}`);
+    await loadCandidates();
+}
+
+function downloadExport(format) {
+    if (!state.selectedVacancyId) {
+        alert("Выберите вакансию.");
+        return;
+    }
+    window.open(`${apiPrefix}/vacancies/${state.selectedVacancyId}/export?format=${format}`, "_blank");
+}
+
+function attachListeners() {
+    const el = getElements();
+    el.createVacancyBtn.addEventListener("click", async () => {
+        try {
+            setUiStatus("Создание вакансии...", "info");
+            await createVacancy();
+        } catch (error) {
+            setUiStatus(`Ошибка создания вакансии: ${error.message}`, "error");
+            alert(error.message);
         }
-    } catch (e) {
-        console.error("Screening error:", e);
-        alert("❌ Ошибка сети при попытке рассылки.");
+    });
+    el.uploadBtn.addEventListener("click", async () => {
+        try {
+            setUiStatus("Загрузка и обработка резюме...", "info");
+            await uploadResumes();
+        } catch (error) {
+            setUiStatus(`Ошибка загрузки: ${error.message}`, "error");
+            alert(error.message);
+        }
+    });
+    el.refreshBtn.addEventListener("click", async () => {
+        try {
+            setUiStatus("Обновление списка кандидатов...", "info");
+            await loadCandidates();
+            setUiStatus("Список кандидатов обновлён.", "success");
+        } catch (error) {
+            setUiStatus(`Ошибка обновления: ${error.message}`, "error");
+            alert(error.message);
+        }
+    });
+    el.outreachBtn.addEventListener("click", async () => {
+        try {
+            setUiStatus("Запуск outreach...", "info");
+            await startOutreach();
+        } catch (error) {
+            setUiStatus(`Ошибка outreach: ${error.message}`, "error");
+            alert(error.message);
+        }
+    });
+    el.exportJsonBtn.addEventListener("click", () => downloadExport("json"));
+    el.exportCsvBtn.addEventListener("click", () => downloadExport("csv"));
+    el.vacancySelect.addEventListener("change", async (event) => {
+        state.selectedVacancyId = Number(event.target.value);
+        updateVacancyStatus();
+        try {
+            setUiStatus("Переключение вакансии...", "info");
+            await loadCandidates();
+            setUiStatus("Вакансия переключена.", "success");
+        } catch (error) {
+            setUiStatus(`Ошибка загрузки кандидатов: ${error.message}`, "error");
+            alert(error.message);
+        }
+    });
+}
+
+async function initDashboard() {
+    getElements();
+    attachListeners();
+    try {
+        await loadHealth();
+        await loadVacancies();
+        await loadCandidates();
+        setUiStatus("UI готов к работе.", "success");
+    } catch (error) {
+        setUiStatus(`Ошибка инициализации dashboard: ${error.message}`, "error");
+        console.error(error);
     }
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-    loadCandidates();
-});
+if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", initDashboard);
+} else {
+    initDashboard();
+}
