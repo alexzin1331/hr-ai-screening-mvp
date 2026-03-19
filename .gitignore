@@ -1,0 +1,40 @@
+# OS / IDE
+.DS_Store
+.idea/
+
+# Environment files
+*.env
+!.env.example
+.env.local
+.env.enc
+.env.gpg
+
+# Python caches
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+**/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+**/venv/
+**/.venv/
+dialog_scoring_service/venv_score/
+
+# Local data
+uploads/
+**/uploads/
+*.db
+*.sqlite
+*.sqlite3
+test.db
+
+# Misc
+get-pip.py
+out.txt

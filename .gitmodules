@@ -1,0 +1,3 @@
+[submodule "hr-ai-screening-mvp"]
+	path = hr-ai-screening-mvp
+	url = https://github.com/alexzin1331/hr-ai-screening-mvp.git
