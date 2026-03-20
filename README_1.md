@@ -88,3 +88,44 @@
 - локальный ML-сервис с retrieval, агентным orchestration и trainable scoring head
 
 Если защищать проект на презентации, оптимальная подача: показать не только backend и UI, но именно полный путь кандидата от email-invite до появления `SCORE SOFT SKILLS` у HR.
+
+## Настройки нейросети и особенности
+
+В проекте используются два контура работы с ML:
+
+- в основном backend для extraction/scoring предусмотрен LLM-клиент через абстракцию `BaseLLMClient`
+- для оценки soft skills после Telegram screening используется отдельный локальный `dialog_scoring_service`
+
+### Настройки нейросети в `dialog_scoring_service`
+
+- базовая модель: `intfloat/multilingual-e5-small`
+- тип инференса: локальный, без внешнего API
+- режим выполнения: `CPU-only`
+- библиотека: `sentence-transformers`
+- способ оценки: сравнение эмбеддингов требований вакансии и ответов кандидата
+
+### Дополнительные параметры runtime
+
+Через переменные окружения можно настраивать:
+
+- `DIALOG_SCORING_MODEL_NAME` — имя локальной embedding-модели
+- `DIALOG_SCORING_THREADS` — ограничение числа CPU threads
+- `DIALOG_SCORING_MAX_ANSWERS` — лимит количества ответов кандидата, участвующих в scoring
+- `DIALOG_SCORING_CALIBRATOR_PATH` — путь до trainable calibrator/head
+
+### Особенности работы
+
+- при первом запуске модель скачивается локально, поэтому первый старт может быть заметно дольше следующих
+- после первичной загрузки модель обычно берётся из локального кэша
+- scoring soft skills не меняет основной HR flow: если `dialog_scoring_service` недоступен, основной backend остаётся работоспособным
+- в scoring добавлен retrieval по требованиям вакансии, чтобы оценка опиралась на релевантные hard/soft skills
+- trainable head сделан как безопасная адаптация поверх эмбеддингов и не требует тяжёлого full fine-tuning трансформера
+
+### Практическая подача на презентации
+
+Это удобно объяснять так:
+
+- резюме и базовый matching обрабатываются основным backend
+- soft skills оцениваются отдельным локальным ML-сервисом
+- сервис использует retrieval, агентное orchestration и локальную embedding-модель
+- итоговый `SCORE SOFT SKILLS` сохраняется в систему и отображается HR в dashboard
