@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-from functools import lru_cache
-
-import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-try:
-    from sentence_transformers import SentenceTransformer
-except ImportError:  # pragma: no cover
-    SentenceTransformer = None
+from agents import RetrieverAgent, ScoringAgent, ScreeningCoordinatorAgent
+from scoring_runtime import DEFAULT_MODEL_NAME, LocalEmbeddingScorer, get_model
 
 
-MODEL_NAME = "intfloat/multilingual-e5-small"
 app = FastAPI(title="Dialog Scoring Service")
 
 
@@ -29,20 +23,13 @@ class EvaluationResponse(BaseModel):
     explanation: str = ""
 
 
-@lru_cache
-def get_model():
-    if SentenceTransformer is None:
-        raise RuntimeError("sentence-transformers is not installed")
-    return SentenceTransformer(MODEL_NAME)
-
-
 @app.get("/health")
 def health() -> dict[str, str]:
     try:
         get_model()
-        return {"status": "ok", "model": MODEL_NAME}
+        return {"status": "ok", "model": DEFAULT_MODEL_NAME, "inference_mode": "local"}
     except Exception as exc:
-        return {"status": "degraded", "model": MODEL_NAME, "error": str(exc)}
+        return {"status": "degraded", "model": DEFAULT_MODEL_NAME, "error": str(exc), "inference_mode": "local"}
 
 
 @app.post("/evaluate", response_model=EvaluationResponse)
@@ -52,22 +39,25 @@ def evaluate(req: EvaluationRequest) -> EvaluationResponse:
         return EvaluationResponse(score_dialog=0.0, explanation="Нет ответов")
 
     try:
-        model = get_model()
+        coordinator = ScreeningCoordinatorAgent(
+            retriever=RetrieverAgent(),
+            scorer=ScoringAgent(LocalEmbeddingScorer()),
+        )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Dialog scoring model is unavailable: {exc}") from exc
 
-    job_text = " ".join(
-        part.strip()
-        for part in [req.vacancy_description, *req.hard_skills, *req.soft_skills]
-        if part and part.strip()
+    result = coordinator.run(
+        vacancy_description=req.vacancy_description,
+        hard_skills=req.hard_skills,
+        soft_skills=req.soft_skills,
+        candidate_answers=answers,
     )
-    embeddings = model.encode([job_text, *answers], normalize_embeddings=True)
-    job_emb = embeddings[0]
-    avg_answer_emb = np.mean(embeddings[1:], axis=0)
-    similarity = float(np.clip(np.dot(job_emb, avg_answer_emb), -1.0, 1.0))
-    score = float(np.clip((similarity + 1) / 2, 0.0, 1.0))
-
-    return EvaluationResponse(score_dialog=score, explanation="Семантическая близость к требованиям")
+    evidence = result["evidence"]
+    evidence_suffix = f" Топ-контекст: {evidence[0]['text']}" if evidence else ""
+    return EvaluationResponse(
+        score_dialog=result["score_dialog"],
+        explanation=f"Локальный multi-agent scoring по релевантным требованиям.{evidence_suffix}",
+    )
 
 
 if __name__ == "__main__":
