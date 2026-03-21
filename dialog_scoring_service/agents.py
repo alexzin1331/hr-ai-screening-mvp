@@ -67,8 +67,8 @@ class ScoringAgent:
     def __init__(self, scorer) -> None:
         self.scorer = scorer
 
-    def run(self, job_text: str, candidate_answers: list[str]) -> tuple[float, dict]:
-        return self.scorer.score(job_text, candidate_answers)
+    def run(self, job_text: str, candidate_answers: list[str], evidence: list[RetrievedChunk]) -> tuple[float, dict]:
+        return self.scorer.score(job_text, candidate_answers, evidence=evidence)
 
 
 class ScreeningCoordinatorAgent:
@@ -86,7 +86,7 @@ class ScreeningCoordinatorAgent:
     ) -> dict:
         job_text = " ".join([vacancy_description, *hard_skills, *soft_skills]).strip()
         evidence = self.retriever.run(vacancy_description, hard_skills, soft_skills, candidate_answers)
-        score, debug = self.scorer.run(job_text, candidate_answers)
+        score, debug = self.scorer.run(job_text, candidate_answers, evidence)
         return {
             "score_dialog": score,
             "evidence": [{"text": item.text, "score": item.score, "source": item.source} for item in evidence],
